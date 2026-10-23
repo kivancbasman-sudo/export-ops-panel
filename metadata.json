@@ -1,0 +1,6 @@
+{
+  "name": "İhracat Operasyon Paneli",
+  "description": "İhracat yapan firmalar için hava kargo, satış ve operasyon takip paneli.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
