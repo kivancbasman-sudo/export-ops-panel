@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Check, Copy, Edit2 } from 'lucide-react';
+import { AlertTriangle, Check, Copy, Edit2 } from 'lucide-react';
 
 interface EditableDocFieldProps {
   label: string;
@@ -12,6 +12,8 @@ interface EditableDocFieldProps {
   multiCols?: number;
   className?: string;
   maxLength?: number;
+  conflictMessage?: string;
+  conflictingValues?: string[];
   extraAction?: {
     icon: React.ReactNode;
     title: string;
@@ -31,6 +33,8 @@ export function EditableDocField({
   multiCols, 
   className, 
   maxLength,
+  conflictMessage,
+  conflictingValues,
   extraAction
 }: EditableDocFieldProps) {
   const [isEditing, setIsEditing] = useState(false);
@@ -112,19 +116,35 @@ export function EditableDocField({
     handleCopy(textToCopy);
   };
 
+  const hasConflict = Boolean(conflictMessage);
+  const normalizedConflictSet = new Set(
+    (conflictingValues || []).map(v => v.trim().replace(/\s+/g, ' ').toUpperCase())
+  );
+
   return (
     <div className={`flex flex-col ${className || 'flex-1 min-w-0'}`}>
       <label 
-        className="text-[10px] font-bold text-slate-500 dark:text-stone-400 uppercase tracking-wider cursor-pointer hover:text-blue-600 dark:hover:text-amber-400 group flex items-center gap-1 transition-colors select-none truncate mb-0.5"
+        className={`text-[10px] font-bold uppercase tracking-wider cursor-pointer group flex items-center gap-1 transition-colors select-none truncate mb-0.5 ${
+          hasConflict
+            ? 'text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300'
+            : 'text-slate-500 dark:text-stone-400 hover:text-blue-600 dark:hover:text-amber-400'
+        }`}
         onClick={() => setIsEditing(true)}
-        title={`${label} (Düzenlemek için tıklayın)`}
+        title={hasConflict ? `${label} — ${conflictMessage}` : `${label} (Düzenlemek için tıklayın)`}
       >
+        {hasConflict && (
+          <AlertTriangle className="w-3 h-3 text-rose-600 dark:text-rose-400 shrink-0" />
+        )}
         <span className="truncate">{label}</span>
         <Edit2 className="w-2.5 h-2.5 opacity-0 group-hover:opacity-100 transition-opacity text-blue-500 dark:text-amber-400 shrink-0" />
       </label>
       
       {isEditing ? (
-        <div className="relative flex items-center border border-blue-500 dark:border-amber-500 bg-slate-100 dark:bg-stone-900 shadow-[0_0_0_2px_rgba(245,158,11,0.2)] h-6.5 min-h-[26px] rounded-sm w-full min-w-0 max-w-full">
+        <div className={`relative flex items-center border bg-slate-100 dark:bg-stone-900 h-6.5 min-h-[26px] rounded-sm w-full min-w-0 max-w-full ${
+          hasConflict
+            ? 'border-rose-500 dark:border-rose-500 shadow-[0_0_0_2px_rgba(244,63,94,0.2)]'
+            : 'border-blue-500 dark:border-amber-500 shadow-[0_0_0_2px_rgba(245,158,11,0.2)]'
+        }`}>
           {prefixStr && <span className="pl-1.5 text-xs font-mono font-medium text-slate-500 dark:text-stone-400 select-none cursor-text shrink-0" onClick={() => inputRef.current?.focus()}>{prefixStr}</span>}
           <input
             ref={inputRef}
@@ -149,30 +169,50 @@ export function EditableDocField({
         </div>
       ) : (
         <div 
-          className="relative flex items-center justify-start gap-1 min-h-[26px] border border-transparent hover:border-slate-400 dark:hover:border-stone-600 hover:bg-slate-200/70 dark:hover:bg-stone-800/80 rounded-sm px-1 group transition-colors min-w-0 w-full overflow-hidden"
+          className={`relative flex items-center justify-start gap-1 min-h-[26px] border rounded-sm px-1 group transition-colors min-w-0 w-full overflow-hidden ${
+            hasConflict
+              ? 'border-rose-400 dark:border-rose-700 bg-rose-50/80 dark:bg-rose-950/40 hover:border-rose-500 dark:hover:border-rose-600'
+              : 'border-transparent hover:border-slate-400 dark:hover:border-stone-600 hover:bg-slate-200/70 dark:hover:bg-stone-800/80'
+          }`}
           onDoubleClick={() => setIsEditing(true)}
+          title={hasConflict ? conflictMessage : undefined}
         >
           <div className={`${isMulti && multiCols === 2 && (displayValue as string[]).length > 1 ? 'grid grid-cols-2 gap-1 items-center w-fit shrink-0' : 'flex items-center gap-1 min-w-0 shrink-0'} py-0.5 cursor-text`}>
             {isMulti ? (
               (displayValue as string[]).length > 0 ? (
-                (displayValue as string[]).map((v, i) => (
-                  <span 
-                    key={i} 
-                    className={`bg-slate-100 dark:bg-stone-800 border border-slate-300 dark:border-stone-700 shadow-sm text-slate-900 dark:text-stone-100 font-mono text-xs font-semibold px-1.5 py-0.5 rounded-sm select-text shrink-0 whitespace-nowrap ${multiCols === 2 ? 'text-center' : ''}`} 
-                    title={v}
-                  >
-                    {v}
-                  </span>
-                ))
+                (displayValue as string[]).map((v, i) => {
+                  const isItemConflicting = normalizedConflictSet.has(
+                    v.trim().replace(/\s+/g, ' ').toUpperCase()
+                  );
+                  return (
+                    <span 
+                      key={i} 
+                      className={`border shadow-sm font-mono text-xs font-semibold px-1.5 py-0.5 rounded-sm select-text shrink-0 whitespace-nowrap ${multiCols === 2 ? 'text-center' : ''} ${
+                        isItemConflicting
+                          ? 'bg-rose-100 dark:bg-rose-950/80 border-rose-400 dark:border-rose-700 text-rose-800 dark:text-rose-200'
+                          : 'bg-slate-100 dark:bg-stone-800 border-slate-300 dark:border-stone-700 text-slate-900 dark:text-stone-100'
+                      }`} 
+                      title={isItemConflicting && conflictMessage ? `${v} — ${conflictMessage}` : v}
+                    >
+                      {v}
+                    </span>
+                  );
+                })
               ) : (
                 <span className="text-slate-500 dark:text-stone-500 text-xs font-mono italic select-none whitespace-nowrap">Boş</span>
               )
             ) : (
               <span 
-                className={`font-mono text-xs ${displayValue ? 'text-slate-900 dark:text-stone-100 font-semibold select-text' : 'text-slate-500 dark:text-stone-500 italic select-none font-normal'} inline-flex items-center shrink-0`} 
-                title={String((prefixStr || '') + (displayValue || ''))}
+                className={`font-mono text-xs ${
+                  displayValue
+                    ? hasConflict
+                      ? 'text-rose-800 dark:text-rose-200 font-semibold select-text'
+                      : 'text-slate-900 dark:text-stone-100 font-semibold select-text'
+                    : 'text-slate-500 dark:text-stone-500 italic select-none font-normal'
+                } inline-flex items-center shrink-0`} 
+                title={hasConflict ? `${(prefixStr || '') + (displayValue || '')} — ${conflictMessage}` : String((prefixStr || '') + (displayValue || ''))}
               >
-                {prefixStr && displayValue ? <span className="text-slate-500 dark:text-stone-400 font-mono font-medium mr-0.5 shrink-0">{prefixStr}</span> : null}
+                {prefixStr && displayValue ? <span className={`${hasConflict ? 'text-rose-600 dark:text-rose-400' : 'text-slate-500 dark:text-stone-400'} font-mono font-medium mr-0.5 shrink-0`}>{prefixStr}</span> : null}
                 <span className="whitespace-nowrap select-text">{displayValue || 'Boş'}</span>
               </span>
             )}

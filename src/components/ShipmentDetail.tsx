@@ -1,12 +1,12 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import { Button } from './ui/Button';
 import { Input } from './ui/Input';
 import { PalletData, ProductRow, Shipment } from '../types';
 import { NumberInput } from './ui/NumberInput';
 import { EditableDocField } from './ui/EditableDocField';
-import { calculateFreight, formatNumber, formatShipmentDateDetailed, parseDateFlexible, getShipmentMissingFields, generateId } from '../utils/calculations';
-import { ArrowLeft, Save, Trash2, Plus, Calendar, Type, User, Upload, Download, FileText, AlertCircle, CheckCircle2, Mail, Ban } from 'lucide-react';
+import { calculateFreight, formatNumber, formatShipmentDateDetailed, parseDateFlexible, getShipmentMissingFields, generateId, findDocumentConflicts, UniqueDocFieldKey } from '../utils/calculations';
+import { ArrowLeft, Save, Trash2, Plus, Calendar, Type, User, Upload, Download, FileText, AlertCircle, AlertTriangle, CheckCircle2, Mail, Ban } from 'lucide-react';
 import { exportPalletDataToExcel, importPalletDataFromExcel } from '../utils/excel';
 import { EmailTemplateModal } from './EmailTemplateModal';
 import { WeeklyShipmentSwitcher } from './WeeklyShipmentSwitcher';
@@ -226,9 +226,14 @@ export function ShipmentDetail({ id, onBack, onIdChange, onNavigateToCalculator 
   };
 
   // Freight calculations
-  const { rate, amount: navlunBedeli, isMinAmount } = calculateFreight(computedChargeableWeight, settings.freightTiers, settings.minFreightAmount);
-  const invoiceTotal = data.invoiceTotalAmount || 0;
-  const fobTutar = invoiceTotal - navlunBedeli;
+  const { rate, amount: calculatedFreightAmount, isMinAmount: rawIsMinAmount } = calculateFreight(
+    computedChargeableWeight,
+    settings.freightTiers,
+    settings.minFreightAmount
+  );
+  const navlunAwbHaric = computedChargeableWeight > 0 ? calculatedFreightAmount : 0;
+  const isMinAmount = computedChargeableWeight > 0 && rawIsMinAmount;
+  const navlunAwbDahil = computedChargeableWeight > 0 ? navlunAwbHaric + settings.awbFee : 0;
 
   const handlePalletChange = (index: number, field: keyof PalletData, value: any) => {
     const newPallets = [...data.pallets];
@@ -308,6 +313,46 @@ export function ShipmentDetail({ id, onBack, onIdChange, onNavigateToCalculator 
   };
 
   const missingFields = getShipmentMissingFields(data);
+
+  // Çakışan / Mükerrer Belge Kontrolü (AWB No ve PO No hariç tüm belge alanları)
+  const documentConflicts = useMemo(() => {
+    const effectiveId = id !== 'new' ? id : loadedIdRef.current;
+    return findDocumentConflicts(data, effectiveId, shipments);
+  }, [data, id, shipments]);
+
+  const getFieldConflictInfo = (field: UniqueDocFieldKey) => {
+    const fieldConflicts = documentConflicts.filter(c => c.field === field);
+    if (fieldConflicts.length === 0) {
+      return { conflictMessage: undefined, conflictingValues: undefined };
+    }
+    const messages = fieldConflicts.map(c => {
+      const parts: string[] = [];
+      if (c.isSelfDuplicate) {
+        parts.push('Bu sevkiyatta mükerrer girilmiş');
+      }
+      if (c.otherShipments.length > 0) {
+        const names = c.otherShipments
+          .map(s => `${s.title}${s.isCancelled ? ' (İptal)' : ''}`)
+          .join(', ');
+        parts.push(`Şu sevkiyatlarda da kayıtlı: ${names}`);
+      }
+      return `${c.value}: ${parts.join(' • ')}`;
+    });
+    return {
+      conflictMessage: messages.join('\n'),
+      conflictingValues: fieldConflicts.map(c => c.value),
+    };
+  };
+
+  const bookingConflict = getFieldConflictInfo('bookingNo');
+  const customInvoiceConflict = getFieldConflictInfo('customInvoiceNo');
+  const i7xConflict = getFieldConflictInfo('i7xNo');
+  const d7xConflict = getFieldConflictInfo('d7xNo');
+  const diConflict = getFieldConflictInfo('diNo');
+  const eArsivConflict = getFieldConflictInfo('eArsivNo');
+  const eIrsaliyeConflict = getFieldConflictInfo('eIrsaliyeNo');
+  const sbifNoConflict = getFieldConflictInfo('sbifNo');
+  const sbifIdConflict = getFieldConflictInfo('sbifId');
 
   const handleBack = () => {
     flushPendingSave();
@@ -639,28 +684,89 @@ export function ShipmentDetail({ id, onBack, onIdChange, onNavigateToCalculator 
         </section>
 
         {/* SECTION 1: Belgeler */}
-        <section className="border border-slate-400 dark:border-stone-700 p-2.5 sm:p-3 relative rounded-sm">
-          <h3 className="absolute -top-3 left-4 bg-slate-100 dark:bg-stone-900 px-2 text-xs font-bold text-slate-600 dark:text-stone-400 tracking-wider">BELGELER</h3>
+        <section className={`border p-2.5 sm:p-3 relative rounded-sm transition-colors ${
+          documentConflicts.length > 0
+            ? 'border-rose-400 dark:border-rose-700'
+            : 'border-slate-400 dark:border-stone-700'
+        }`}>
+          <h3 className="absolute -top-3 left-4 bg-slate-100 dark:bg-stone-900 px-2 text-xs font-bold text-slate-600 dark:text-stone-400 tracking-wider flex items-center gap-1.5">
+            <span>BELGELER</span>
+            {documentConflicts.length > 0 && (
+              <span
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-bold tracking-normal normal-case rounded bg-rose-100 dark:bg-rose-950/90 text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-800"
+                title={`${documentConflicts.length} adet çakışan/mükerrer belge numarası tespit edildi`}
+              >
+                <AlertTriangle className="w-3 h-3 text-rose-600 dark:text-rose-400 shrink-0" />
+                {documentConflicts.length} Mükerrer Belge
+              </span>
+            )}
+          </h3>
           <div className="flex flex-col gap-2 w-full min-w-0">
+            {/* Çakışan / Mükerrer Belge Uyarı Şeridi */}
+            {documentConflicts.length > 0 && (
+              <div
+                role="alert"
+                className="bg-rose-50 dark:bg-rose-950/50 border border-rose-300 dark:border-rose-800 rounded-md px-2.5 py-2 text-xs text-rose-900 dark:text-rose-200 flex flex-col gap-1"
+              >
+                <div className="flex items-center gap-1.5 font-bold text-rose-800 dark:text-rose-300">
+                  <AlertTriangle className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400 shrink-0" />
+                  <span>Çakışan / Mükerrer Belge Numarası Tespit Edildi</span>
+                </div>
+                <ul className="space-y-1 pl-5 list-disc text-[11px] leading-snug">
+                  {documentConflicts.map((conflict, idx) => (
+                    <li key={`${conflict.field}-${conflict.normalizedValue}-${idx}`}>
+                      <span className="font-semibold">{conflict.label}</span>{' '}
+                      (<span className="font-mono font-bold text-rose-700 dark:text-rose-300">{conflict.value}</span>):{' '}
+                      {conflict.isSelfDuplicate && (
+                        <span className="font-medium">
+                          Bu sevkiyatta birden fazla kez girilmiş
+                          {conflict.otherShipments.length > 0 ? ' • ' : ''}
+                        </span>
+                      )}
+                      {conflict.otherShipments.length > 0 && (
+                        <span>
+                          Diğer sevkiyat:{' '}
+                          {conflict.otherShipments.map((ref, rIdx) => (
+                            <React.Fragment key={ref.id}>
+                              {rIdx > 0 && ', '}
+                              <button
+                                type="button"
+                                onClick={() => handleSwitchShipment(ref.id)}
+                                className="underline font-semibold text-rose-800 dark:text-rose-300 hover:text-rose-950 dark:hover:text-rose-100 cursor-pointer"
+                                title="Bu sevkiyatı açmak için tıklayın"
+                              >
+                                {ref.title}
+                                {ref.isCancelled ? ' (İptal)' : ''}
+                              </button>
+                            </React.Fragment>
+                          ))}
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             {/* Bölüm 1 (Üst Bölüm): Sevkiyat, Sipariş & Dahili Belgeler */}
             <div className="flex flex-wrap items-start gap-2 w-full min-w-0">
               {/* Group 1: Booking & AWB */}
               <div className="flex flex-nowrap items-start gap-3 p-2 bg-slate-200 dark:bg-stone-800/80 rounded-md border border-slate-300 dark:border-stone-700 shrink-0 min-w-[310px]">
-                <EditableDocField label="Booking No" value={data.bookingNo} copyable onChange={val => handleChange('bookingNo', val)} className="flex-1 min-w-[120px]" />
+                <EditableDocField label="Booking No" value={data.bookingNo} copyable conflictMessage={bookingConflict.conflictMessage} onChange={val => handleChange('bookingNo', val)} className="flex-1 min-w-[120px]" />
                 <EditableDocField label="AWB No" value={data.awbNo} copyable onChange={val => handleChange('awbNo', val)} className="flex-1 min-w-[150px]" />
               </div>
 
               {/* Group 2: PO No & Yurtdışı Fatura No */}
               <div className="flex flex-nowrap items-start gap-3 p-2 bg-slate-200 dark:bg-stone-800/80 rounded-md border border-slate-300 dark:border-stone-700 shrink-0 w-fit">
                 <EditableDocField label="PO No" value={data.poNo} copyable isMulti multiCols={2} onChange={val => handleChange('poNo', val)} className="shrink-0 w-fit" />
-                <EditableDocField label="Yurtdışı Fatura No" value={data.customInvoiceNo || []} copyable isMulti multiCols={2} onChange={val => handleChange('customInvoiceNo', val)} className="shrink-0 w-fit" />
+                <EditableDocField label="Yurtdışı Fatura No" value={data.customInvoiceNo || []} copyable isMulti multiCols={2} conflictMessage={customInvoiceConflict.conflictMessage} conflictingValues={customInvoiceConflict.conflictingValues} onChange={val => handleChange('customInvoiceNo', val)} className="shrink-0 w-fit" />
               </div>
 
               {/* Group 3: I7X, D7X, DI (Fix 8 Karakter) */}
               <div className="flex flex-nowrap items-start gap-3 p-2 bg-slate-200 dark:bg-stone-800/80 rounded-md border border-slate-300 dark:border-stone-700 flex-1 min-w-[260px]">
-                <EditableDocField label="I7X Fatura" value={data.i7xNo.replace(/^I7X-/, '')} prefixStr="I7X-" maxLength={8} copyable copyWithoutPrefix onChange={val => handleChange('i7xNo', val ? `I7X-${val.replace(/^I7X-/, '')}` : '')} />
-                <EditableDocField label="D7X İrsaliye" value={data.d7xNo.replace(/^D7X-/, '')} prefixStr="D7X-" maxLength={8} copyable copyWithoutPrefix onChange={val => handleChange('d7xNo', val ? `D7X-${val.replace(/^D7X-/, '')}` : '')} />
-                <EditableDocField label="DI Paketleme" value={data.diNo.replace(/^DI-/, '')} prefixStr="DI-" maxLength={8} copyable copyWithoutPrefix onChange={val => handleChange('diNo', val ? `DI-${val.replace(/^DI-/, '')}` : '')} />
+                <EditableDocField label="I7X Fatura" value={data.i7xNo.replace(/^I7X-/, '')} prefixStr="I7X-" maxLength={8} copyable copyWithoutPrefix conflictMessage={i7xConflict.conflictMessage} onChange={val => handleChange('i7xNo', val ? `I7X-${val.replace(/^I7X-/, '')}` : '')} />
+                <EditableDocField label="D7X İrsaliye" value={data.d7xNo.replace(/^D7X-/, '')} prefixStr="D7X-" maxLength={8} copyable copyWithoutPrefix conflictMessage={d7xConflict.conflictMessage} onChange={val => handleChange('d7xNo', val ? `D7X-${val.replace(/^D7X-/, '')}` : '')} />
+                <EditableDocField label="DI Paketleme" value={data.diNo.replace(/^DI-/, '')} prefixStr="DI-" maxLength={8} copyable copyWithoutPrefix conflictMessage={diConflict.conflictMessage} onChange={val => handleChange('diNo', val ? `DI-${val.replace(/^DI-/, '')}` : '')} />
               </div>
             </div>
 
@@ -668,14 +774,14 @@ export function ShipmentDetail({ id, onBack, onIdChange, onNavigateToCalculator 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2 w-full min-w-0">
               {/* Group 4: E-Arşiv & E-İrsaliye */}
               <div className="flex flex-nowrap items-start gap-3 p-2 bg-slate-200 dark:bg-stone-800/80 rounded-md border border-slate-300 dark:border-stone-700 min-w-0 w-full">
-                <EditableDocField label="E-Arşiv Fatura No" value={data.eArsivNo} maxLength={16} copyable onChange={val => handleChange('eArsivNo', val)} className="flex-1 min-w-0" />
-                <EditableDocField label="E-İrsaliye No" value={data.eIrsaliyeNo} maxLength={16} copyable onChange={val => handleChange('eIrsaliyeNo', val)} className="flex-1 min-w-0" />
+                <EditableDocField label="E-Arşiv Fatura No" value={data.eArsivNo} maxLength={16} copyable conflictMessage={eArsivConflict.conflictMessage} onChange={val => handleChange('eArsivNo', val)} className="flex-1 min-w-0" />
+                <EditableDocField label="E-İrsaliye No" value={data.eIrsaliyeNo} maxLength={16} copyable conflictMessage={eIrsaliyeConflict.conflictMessage} onChange={val => handleChange('eIrsaliyeNo', val)} className="flex-1 min-w-0" />
               </div>
 
               {/* Group 5: SBİF Belgeleri */}
               <div id="sbif-group" className="flex flex-nowrap items-start gap-3 p-2 bg-slate-200 dark:bg-stone-800/80 rounded-md border border-slate-300 dark:border-stone-700 min-w-0 w-full">
-                <EditableDocField label="SBİF No" value={data.sbifNo || ''} maxLength={5} copyable onChange={val => handleChange('sbifNo', val)} className="w-16 sm:w-20 shrink-0" />
-                <EditableDocField label="SBİF ID" value={data.sbifId || ''} maxLength={23} copyable onChange={val => handleChange('sbifId', val)} className="flex-1 min-w-0" />
+                <EditableDocField label="SBİF No" value={data.sbifNo || ''} maxLength={5} copyable conflictMessage={sbifNoConflict.conflictMessage} onChange={val => handleChange('sbifNo', val)} className="w-16 sm:w-20 shrink-0" />
+                <EditableDocField label="SBİF ID" value={data.sbifId || ''} maxLength={23} copyable conflictMessage={sbifIdConflict.conflictMessage} onChange={val => handleChange('sbifId', val)} className="flex-1 min-w-0" />
               </div>
             </div>
           </div>
@@ -1010,15 +1116,10 @@ export function ShipmentDetail({ id, onBack, onIdChange, onNavigateToCalculator 
           </div>
         </section>
 
-        {/* SECTION 2: Finans & Navlun */}
+        {/* SECTION 4: Navlun */}
         <section className="border border-slate-400 dark:border-stone-700 p-4 relative rounded-sm">
           <h3 className="absolute -top-3 left-4 bg-slate-100 dark:bg-stone-900 px-2 text-xs font-bold text-slate-600 dark:text-stone-400 tracking-wider">NAVLUN</h3>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-            <NumberInput 
-              label="Fatura Toplam Tutarı ($)" 
-              value={data.invoiceTotalAmount || 0} 
-              onChange={val => handleChange('invoiceTotalAmount', val)} 
-            />
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
             <Input 
               label="Toplam Net Ağırlık" 
               type="text" 
@@ -1042,23 +1143,26 @@ export function ShipmentDetail({ id, onBack, onIdChange, onNavigateToCalculator 
             />
           </div>
           
-          <div className="bg-slate-200 dark:bg-stone-900 border border-slate-300 dark:border-stone-800 p-3.5 grid grid-cols-2 md:grid-cols-4 gap-4 text-sm rounded-sm shadow-inner transition-colors">
-            <div>
-              <span className="block text-slate-600 dark:text-stone-400 text-xs font-semibold mb-1">Navlun Bedeli</span>
-              <span className="font-mono text-base font-bold text-slate-900 dark:text-stone-100">${formatNumber(navlunBedeli, 2)}</span>
+          <div className="bg-slate-200 dark:bg-stone-900 border border-slate-300 dark:border-stone-800 grid grid-cols-1 md:grid-cols-2 text-sm rounded-sm shadow-inner overflow-hidden transition-colors">
+            <div className="p-3.5">
+              <span className="block text-slate-600 dark:text-stone-400 text-xs font-bold mb-1 uppercase tracking-wider">Navlun (AWB Hariç)</span>
+              <span className="font-mono text-xl font-bold text-slate-900 dark:text-stone-100">${formatNumber(navlunAwbHaric, 2)}</span>
               <span className="block text-xs text-slate-600 dark:text-stone-400 mt-1">
-                {isMinAmount ? 'Min. Tutar (270 USD)' : `Barem: $${formatNumber(rate, 2)} / kg`}
+                {computedChargeableWeight <= 0
+                  ? 'Ağırlık bilgisi girilmedi'
+                  : isMinAmount
+                  ? `Min. Tutar (${settings.minFreightAmount} USD)`
+                  : `Barem: $${formatNumber(rate, 2)} / kg`}
               </span>
             </div>
-            <div>
-              <span className="block text-slate-600 dark:text-stone-400 text-xs font-semibold mb-1">Konşimento Bedeli</span>
-              <span className="font-mono text-base font-bold text-slate-900 dark:text-stone-100">${formatNumber(settings.awbFee, 2)}</span>
-              <span className="block text-xs text-slate-600 dark:text-stone-400 mt-1">Sabit (FOB hesabına dahil değil)</span>
-            </div>
-            <div className="md:col-span-2 border-l border-slate-400 dark:border-stone-800 pl-4 bg-amber-500/5 dark:bg-amber-950/20 -my-3.5 -mr-3.5 p-3.5 rounded-r-sm">
-              <span className="block text-blue-800 dark:text-amber-400 text-xs font-bold mb-1 uppercase tracking-wider">FOB Tutar</span>
-              <span className="font-mono text-xl font-bold text-blue-900 dark:text-amber-300">${formatNumber(fobTutar, 2)}</span>
-              <span className="block text-xs text-blue-700 dark:text-amber-400/80 mt-1 font-medium">Fatura Toplamı - Navlun Bedeli</span>
+            <div className="p-3.5 border-t md:border-t-0 md:border-l border-slate-400 dark:border-stone-800 bg-blue-50/50 dark:bg-amber-950/20">
+              <span className="block text-blue-800 dark:text-amber-400 text-xs font-bold mb-1 uppercase tracking-wider">Navlun (AWB Dahil)</span>
+              <span className="font-mono text-xl font-bold text-blue-900 dark:text-amber-300">${formatNumber(navlunAwbDahil, 2)}</span>
+              <span className="block text-xs text-blue-700 dark:text-amber-400/80 mt-1 font-medium">
+                {computedChargeableWeight <= 0
+                  ? `AWB Bedeli: $${formatNumber(settings.awbFee, 2)}`
+                  : `Navlun + AWB ($${formatNumber(settings.awbFee, 2)})`}
+              </span>
             </div>
           </div>
         </section>

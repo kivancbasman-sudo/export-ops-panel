@@ -220,12 +220,7 @@ export function getShipmentMissingFields(shipment: Partial<Shipment> | undefined
     missing.push('SBİF ID');
   }
 
-  // 3. Finans & Navlun
-  if (shipment.invoiceTotalAmount == null || Number(shipment.invoiceTotalAmount) <= 0) {
-    missing.push('Fatura Toplam Tutarı ($)');
-  }
-
-  // 4. Palet ve Koli Bilgileri
+  // 3. Palet ve Koli Bilgileri
   if (!shipment.pallets || shipment.pallets.length === 0) {
     missing.push('Palet Bilgisi (Palet eklenmemiş)');
   } else {
@@ -363,4 +358,154 @@ export function generateId(prefix: string = ''): string {
   const randomStr = Math.random().toString(36).substring(2, 9);
   return prefix ? `${prefix}_${Date.now()}_${randomStr}` : randomStr;
 }
+
+export type UniqueDocFieldKey =
+  | 'bookingNo'
+  | 'customInvoiceNo'
+  | 'i7xNo'
+  | 'd7xNo'
+  | 'diNo'
+  | 'eArsivNo'
+  | 'eIrsaliyeNo'
+  | 'sbifNo'
+  | 'sbifId';
+
+export interface ConflictingShipmentRef {
+  id: string;
+  title: string;
+  shipmentDate?: string;
+  isCancelled?: boolean;
+}
+
+export interface DocumentConflict {
+  field: UniqueDocFieldKey;
+  label: string;
+  value: string;
+  normalizedValue: string;
+  isSelfDuplicate?: boolean;
+  otherShipments: ConflictingShipmentRef[];
+}
+
+function normalizeDocNumber(val: string | undefined | null, stripPrefix?: RegExp): string {
+  if (!val) return '';
+  let clean = String(val).trim();
+  if (stripPrefix) {
+    clean = clean.replace(stripPrefix, '').trim();
+  }
+  return clean.replace(/\s+/g, ' ').toUpperCase();
+}
+
+function getShipmentDisplayName(s: Shipment): string {
+  const title = s.title?.trim();
+  if (title) return title;
+  if (s.bookingNo?.trim()) return `Sevkiyat (${s.bookingNo.trim()})`;
+  return 'İsimsiz Sevkiyat';
+}
+
+const SINGLE_UNIQUE_DOC_FIELDS: {
+  key: Exclude<UniqueDocFieldKey, 'customInvoiceNo'>;
+  label: string;
+  stripPrefix?: RegExp;
+}[] = [
+  { key: 'bookingNo', label: 'Booking No' },
+  { key: 'i7xNo', label: 'I7X Fatura', stripPrefix: /^I7X[-\s_.:]*/i },
+  { key: 'd7xNo', label: 'D7X İrsaliye', stripPrefix: /^D7X[-\s_.:]*/i },
+  { key: 'diNo', label: 'DI Paketleme', stripPrefix: /^DI[-\s_.:]*/i },
+  { key: 'eArsivNo', label: 'E-Arşiv Fatura No' },
+  { key: 'eIrsaliyeNo', label: 'E-İrsaliye No' },
+  { key: 'sbifNo', label: 'SBİF No' },
+  { key: 'sbifId', label: 'SBİF ID' },
+];
+
+/**
+ * Belgeler bölümündeki benzersiz olması gereken alanlarda (AWB No ve PO No hariç)
+ * diğer sevkiyatlarla veya aynı sevkiyat içinde çakışan/mükerrer numaraları tespit eder.
+ */
+export function findDocumentConflicts(
+  current: Omit<Shipment, 'id' | 'createdAt'>,
+  currentId: string | null | undefined,
+  allShipments: Shipment[]
+): DocumentConflict[] {
+  const conflicts: DocumentConflict[] = [];
+  const otherShipmentsList = allShipments.filter(
+    s => !currentId || currentId === 'new' || s.id !== currentId
+  );
+
+  // 1. Tekil metin alanları (Booking No, I7X, D7X, DI, E-Arşiv, E-İrsaliye, SBİF No, SBİF ID)
+  for (const fieldDef of SINGLE_UNIQUE_DOC_FIELDS) {
+    const rawVal = current[fieldDef.key];
+    const normVal = normalizeDocNumber(rawVal, fieldDef.stripPrefix);
+    if (!normVal) continue;
+
+    const matched: ConflictingShipmentRef[] = [];
+    for (const other of otherShipmentsList) {
+      const otherNorm = normalizeDocNumber(other[fieldDef.key], fieldDef.stripPrefix);
+      if (otherNorm && otherNorm === normVal) {
+        matched.push({
+          id: other.id,
+          title: getShipmentDisplayName(other),
+          shipmentDate: other.shipmentDate,
+          isCancelled: other.isCancelled,
+        });
+      }
+    }
+
+    if (matched.length > 0) {
+      conflicts.push({
+        field: fieldDef.key,
+        label: fieldDef.label,
+        value: String(rawVal).trim(),
+        normalizedValue: normVal,
+        otherShipments: matched,
+      });
+    }
+  }
+
+  // 2. Çoklu alan: Yurtdışı Fatura No (customInvoiceNo) - hem kendi içinde hem diğer sevkiyatlarda kontrol
+  const currentInvoices = Array.isArray(current.customInvoiceNo) ? current.customInvoiceNo : [];
+  if (currentInvoices.length > 0) {
+    const counts = new Map<string, { raw: string; count: number }>();
+    for (const inv of currentInvoices) {
+      const norm = normalizeDocNumber(inv);
+      if (!norm) continue;
+      const existing = counts.get(norm);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        counts.set(norm, { raw: inv.trim(), count: 1 });
+      }
+    }
+
+    for (const [normVal, info] of counts.entries()) {
+      const matched: ConflictingShipmentRef[] = [];
+      for (const other of otherShipmentsList) {
+        const otherInvoices = Array.isArray(other.customInvoiceNo) ? other.customInvoiceNo : [];
+        const hasMatch = otherInvoices.some(inv => normalizeDocNumber(inv) === normVal);
+        if (hasMatch) {
+          matched.push({
+            id: other.id,
+            title: getShipmentDisplayName(other),
+            shipmentDate: other.shipmentDate,
+            isCancelled: other.isCancelled,
+          });
+        }
+      }
+
+      const isSelfDuplicate = info.count > 1;
+      if (isSelfDuplicate || matched.length > 0) {
+        conflicts.push({
+          field: 'customInvoiceNo',
+          label: 'Yurtdışı Fatura No',
+          value: info.raw,
+          normalizedValue: normVal,
+          isSelfDuplicate,
+          otherShipments: matched,
+        });
+      }
+    }
+  }
+
+  return conflicts;
+}
+
 
